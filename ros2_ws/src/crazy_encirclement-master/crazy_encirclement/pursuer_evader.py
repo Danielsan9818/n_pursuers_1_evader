@@ -6,26 +6,29 @@ from motion_capture_tracking_interfaces.msg import NamedPoseArray
 from crazyflie_interfaces.msg import FullState, StringArray, Position
 from std_msgs.msg import Bool
 from rclpy.duration import Duration
+from crazy_encirclement.embedding_SO3_ros import Embedding
 from std_srvs.srv import Empty
 from nav_msgs.msg import Odometry
 from std_msgs.msg import Float32MultiArray, Float32
 from geometry_msgs.msg import Pose, Twist, PoseStamped
+from crazy_encirclement.utils2 import  trajectory, R3_so3, so3_R3
 from scipy.linalg import expm, logm
 import time
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
-class reach_avoid_nv1(Node):
+class Circle_distortion(Node):
     def __init__(self):
         """
             Node that sends the crazyflie to a desired position
             The desired position comes from the distortion of a circle
         """
-        super().__init__('reach_avoid_nv1')
+        super().__init__('circle_distortion')
         self.info = self.get_logger().info
-        self.info('reach avoid game node has been started.')
+        self.info('Circle distortion node has been started.')
         self.declare_parameter('r', '1.')
-        self.declare_parameter('robots', ['C04', 'C13', 'C05'])#,'C14','C20']) 
-        self.declare_parameter('number_of_agents', '3')
+        self.declare_parameter('robots', ['C04', 'C13', 'C05','C14','C20']) 
+        self.declare_parameter('number_of_agents', '5')
         self.declare_parameter('phi_dot', '0.8')
   
         self.robots = self.get_parameter('robots').value
@@ -34,9 +37,7 @@ class reach_avoid_nv1(Node):
         self.k_phi  = 8#float(self.get_parameter('k_phi').value)
         self.phi_dot  = float(self.get_parameter('phi_dot').value)
         self.initial_phase = 0
-        self.reboot_client = {'C04':None,'C13':None,'C05':None}
-        for robot in self.robots:
-            self.reboot_client[robot] = self.create_client(Empty, robot + '/reboot')
+        self.reboot_client = self.create_client(Empty, self.robots + '/reboot')
 
         self.has_initial_pose = [False] * self.n_agents
         self.has_final = [False] * self.n_agents
@@ -46,7 +47,7 @@ class reach_avoid_nv1(Node):
         self.final_pose = np.zeros((self.n_agents, 3))
         self.current_pos = np.zeros((self.n_agents, 3))
         self.initial_pose = np.zeros((self.n_agents, 3))
-        self.hover_height = np.array([50.0,40.0,30.0])  #hover heights for each agent in cm
+        self.hover_height = 0.9
         self.leader = None
         self.follower = None
         self.Rot_des = np.eye(3)
@@ -56,16 +57,10 @@ class reach_avoid_nv1(Node):
         self.i_landing = 0
         self.i_takeoff = 0
 
-        self.r_takeoff = np.zeros((3,len(self.t_takeoff),self.n_agents)) 
-
-        self.r_landing = np.zeros((3,len(self.t_landing),self.n_agents))
-
         self.phases = np.zeros(self.n_agents)
 
         self.phi_cur = Float32()
         self.phase_pub = self.create_publisher(Float32,'/'+ self.robots + '/phase', 1)
-
-        self.position_pub = dict({'C04':None,'C13':None,'C05':None}) #,'C14':None,'C20':None)
 
         self.state = 0
         #0-take-off, 1-hover, 2-encirclement, 3-landing
@@ -111,35 +106,31 @@ class reach_avoid_nv1(Node):
 
         try:
             if self.state == 0:
-                if all(self.has_initial_pose):
+                if self.has_initial_pose:
                     # self.phase_pub.publish(self.phi_cur)
-                    for i,robot in enumerate(self.robots):
-                        self.takeoff(robot,i)
+                    self.takeoff()
 
             elif self.state == 1:
-                for i,robot in enumerate(self.robots):
-                    self.hover(robot,i) 
+                self.hover() 
             
             elif self.state == 2: 
                 # target_r = self.interpolated_points[self.current_point_index] #here you calculate your desired position
                 self.Control_loop() #call your control loop that returns the desired position
                 for i,robot in enumerate(self.robots):
-                    self.send_position(self.send_positions_pur_eva[i,:],robot)
+                    self.send_position(self.send_positions_pur_eva[i],robot)
                 # if np.linalg.norm(self.current_pos-target_r) < 0.05:
             
             elif self.state == 3:
-                if all(self.has_final):
-                    for i,robot in enumerate(self.robots):
-                        self.landing(robot,i)
+                if self.has_final:
+                    self.landing()
 
                     if self.i_landing < len(self.t_landing)-1:
                         self.i_landing += 1
                     else:
-                        for i,robot in enumerate(self.robots):
-                            self.reboot(robot,i)
-                            self.info('Exiting circle node')  
-                            self.destroy_node()
-                            rclpy.shutdown()             
+                        self.reboot()
+                        self.info('Exiting circle node')  
+                        self.destroy_node()
+                        rclpy.shutdown()             
         except KeyboardInterrupt:
             self.info('Exiting open loop command node')
 
@@ -182,30 +173,31 @@ class reach_avoid_nv1(Node):
 
 
 
-    def takeoff(self,robot,i):
-        self.send_position(self.r_takeoff[:,self.i_takeoff,i],robot)
+    def takeoff(self,robot):
+        self.send_position(self.r_takeoff[:,self.i_takeoff],robot)
         #self.info(f"Publishing to {msg.pose.position.x}, {msg.pose.position.y}, {msg.pose.position.z}")
         if self.i_takeoff < len(self.t_takeoff)-1:
             self.i_takeoff += 1
         else:
-            if i == self.n_agents -1:
-                self.state = 1
+            self.state = 1
 
     def takeoff_traj(self,t_max,i):
         #takeoff trajectory
         self.t_takeoff = np.arange(0,t_max,self.timer_period)
-        self.r_takeoff[0,:,i] = self.initial_pose[i,0]*np.ones(len(self.t_takeoff))
-        self.r_takeoff[1,:,i] = self.initial_pose[i,1]*np.ones(len(self.t_takeoff))
-        self.r_takeoff[2,:,i] = self.hover_height[i]*(self.t_takeoff/t_max)
+        self.r_takeoff = np.zeros((3,len(self.t_takeoff))) 
+        self.r_takeoff[0,:] += self.initial_pose[0]*np.ones(len(self.t_takeoff))
+        self.r_takeoff[1,:] += self.initial_pose[1]*np.ones(len(self.t_takeoff))
+        self.r_takeoff[2,:] = self.hover_height[i]*(self.t_takeoff/t_max)
 
     def landing_traj(self,t_max,i):
         #landing trajectory
         self.t_landing = np.arange(t_max,0.1,-self.timer_period)
         self.i_landing = 0
-        self.r_landing[0,:,i] += self.final_pose[i,0]*np.ones(len(self.t_landing))
-        self.r_landing[1,:,i] += self.final_pose[i,1]*np.ones(len(self.t_landing))
-        self.r_landing[2,:,i] = self.final_pose[i,2]*(self.t_landing/t_max)
-
+        self.r_landing = np.zeros((3,len(self.t_landing)))
+        self.r_landing[0,:] += self.final_pose[0]*np.ones(len(self.t_landing))
+        self.r_landing[1,:] += self.final_pose[1]*np.ones(len(self.t_landing))
+        self.r_landing[2,:] = self.hover_height[i]*(self.t_landing/t_max)
+    
     def _landing_callback(self, msg):
         self.land_flag = msg.data
         self.state = 3
@@ -213,20 +205,21 @@ class reach_avoid_nv1(Node):
     def _encircle_callback(self, msg):
         self.state = 2
 
-    def hover(self,robot,i):
+    def hover(self):
         msg = Position()
-        msg.x = self.initial_pose[i,0]
-        msg.y = self.initial_pose[i,1]
-        msg.z = self.hover_height[i]
-        self.position_pub[robot].publish(msg)
+        msg.x = self.initial_pose[0]
+        msg.y = self.initial_pose[1]
+        msg.z = self.hover_height
+        self.position_pub.publish(msg)
 
 
-    def landing(self,robot,i):
-        self.send_position(self.r_landing[:,self.i_landing,i],robot)
+    def landing(self):
+        for robot in self.robots:
+            self.send_position(self.r_landing[:,self.i_landing],robot)
 
-    def reboot(self,robot,i):
+    def reboot(self):
         req = Empty.Request()
-        self.reboot_client[robot].call_async(req)
+        self.reboot_client.call_async(req)
         time.sleep(1.0)    
 
     def send_position(self,r,robot):
@@ -253,7 +246,7 @@ class reach_avoid_nv1(Node):
         # self.pursuers_speed = np.array([20,40,30,21,32])
         self.pursuers_speed = np.ones(self.number_pursuers)*6 #each pursuer at 6 cm/s for initial experiments
         # self.r = np.array([30,15,20,50,25])
-        self.r = np.ones(self.number_pursuers)*0.5  #capture radius set to 50 cm for safety
+        self.r = np.ones(self.number_pursuers)*50  #capture radius set to 50 cm for safety
 
         self.noisy_speedp = self.pursuers_speed
         self.noisy_speede = self.evader_speed
@@ -319,9 +312,9 @@ class reach_avoid_nv1(Node):
 
     def env_limitations(self,pos):
         for i in range(pos.shape[0]):
-            pos[i,0] = np.clip(pos[i,0],-2,2) #clip to 200 cm in each direction
-            pos[i,1] = np.clip(pos[i,1],-1,1) #clip to 200 cm in each direction
-            pos[i,2] = np.clip(pos[i,2],0.2,1.5) #clip to 150 cm in z direction
+            pos[i,0] = np.clip(pos[i,0],-150,150) #clip to 200 cm in each direction
+            pos[i,1] = np.clip(pos[i,1],-200,200) #clip to 200 cm in each direction
+            pos[i,2] = np.clip(pos[i,2],0,150) #clip to 150 cm in z direction
         return pos
     
     def pursuer_win(self,pos_evader,pos_pursuers,r):
@@ -344,9 +337,9 @@ class reach_avoid_nv1(Node):
 
 def main():
     rclpy.init()
-    ra = reach_avoid_nv1()
-    rclpy.spin(ra)
-    ra.destroy_node()
+    encirclement = Circle_distortion()
+    rclpy.spin(encirclement)
+    encirclement.destroy_node()
     rclpy.shutdown()
 
 
