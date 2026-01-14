@@ -1,4 +1,4 @@
-from drone_control.drone_control.optimal_control import Optimal_Control
+from reach_avoid_nv1.optimal_control import Optimal_Control
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy,QoSDurabilityPolicy
@@ -46,7 +46,7 @@ class reach_avoid_node(Node):
         self.final_pose = np.zeros((self.n_agents, 3))
         self.current_pos = np.zeros((self.n_agents, 3))
         self.initial_pose = np.zeros((self.n_agents, 3))
-        self.hover_height = np.array([50.0,40.0,30.0])  #hover heights for each agent in cm
+        self.hover_height = 1e-2*np.array([50.0,40.0,30.0])  #hover heights for each agent in cm
         self.leader = None
         self.follower = None
         self.Rot_des = np.eye(3)
@@ -55,15 +55,12 @@ class reach_avoid_node(Node):
 
         self.i_landing = 0
         self.i_takeoff = 0
-
+        t_max = 4
+        self.t_takeoff = np.arange(0,t_max,self.timer_period)
+        self.t_landing = np.arange(0,t_max,self.timer_period)
         self.r_takeoff = np.zeros((3,len(self.t_takeoff),self.n_agents)) 
 
         self.r_landing = np.zeros((3,len(self.t_landing),self.n_agents))
-
-        self.phases = np.zeros(self.n_agents)
-
-        self.phi_cur = Float32()
-        self.phase_pub = self.create_publisher(Float32,'/'+ self.robots + '/phase', 1)
 
         self.position_pub = dict({'C04':None,'C13':None,'C05':None}) #,'C14':None,'C20':None)
 
@@ -91,14 +88,13 @@ class reach_avoid_node(Node):
             self._poses_changed, qos_profile
         )
 
-        while (not self.has_initial_pose):
+        while (not all(self.has_initial_pose)):
             rclpy.spin_once(self, timeout_sec=0.1)
 
 
-        self.info(f"agents phases: {self.phases}")
-
-        for robot in self.robots:
-            self.position_pub[robot] = self.create_publisher(Position,'/'+ self.robots[robot] + '/cmd_position', 10) #create list with publishers for robot in self.robots
+        for i in range(len(self.robots)):
+            robot = self.robots[i]
+            self.position_pub[robot] = self.create_publisher(Position,'/'+ self.robots[i] + '/cmd_position', 10) #create list with publishers for robot in self.robots
 
 
         #initiating some variables
