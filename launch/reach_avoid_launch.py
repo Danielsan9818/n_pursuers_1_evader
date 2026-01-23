@@ -104,7 +104,7 @@ def parse_yaml(context):
         executable='reach_avoid_node',
         name='reach_avoid_nv1_node',
         output='screen',
-        parameters=[{'robot': robots_list}]
+        parameters=[{'robots': robots_list}]
     ))
             
     return Nodes

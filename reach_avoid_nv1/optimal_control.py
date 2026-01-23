@@ -263,17 +263,23 @@ def Optimal_Control(pos_pursuer,pos_evader,r,pursuers_speed,evader_speed,mode,dt
                 aux = twoVone(pos_pursuer[i],pos_pursuer[j],pos_evader,r[i],r[j],alpha[i],alpha[j],x0,par_ellipsoide,which_area)
             opt_pur2.append(aux)
             aux_act_pur2.append([i,j])
-    opt_pur3=[]
-    aux_act_pur3=[]
-    for i in range(n_pur-2):
-        for j in range(i+1,n_pur-1):
-            for k in range(j+1,n_pur):
-                if alpha[i]==0 or alpha[j]==0 or alpha[k]==0:
-                    aux = np.array([np.nan,np.nan,np.nan])
-                else:
-                    aux = threeVone(pos_pursuer[i],pos_pursuer[j],pos_pursuer[k],pos_evader,r[i],r[j],r[k],alpha[i],alpha[j],alpha[k],x0,par_ellipsoide,which_area)
-                opt_pur3.append(aux)
-                aux_act_pur3.append([i,j,k])
+
+    if n_pur<3:
+
+        opt_pur3 = np.array([np.nan,np.nan,np.nan])
+        aux_act_pur3 = np.array([np.nan,np.nan,np.nan])
+    else:
+        opt_pur3=[]
+        aux_act_pur3=[]
+        for i in range(n_pur-2):
+            for j in range(i+1,n_pur-1):
+                for k in range(j+1,n_pur):
+                    if alpha[i]==0 or alpha[j]==0 or alpha[k]==0:
+                        aux = np.array([np.nan,np.nan,np.nan])
+                    else:
+                        aux = threeVone(pos_pursuer[i],pos_pursuer[j],pos_pursuer[k],pos_evader,r[i],r[j],r[k],alpha[i],alpha[j],alpha[k],x0,par_ellipsoide,which_area)
+                    opt_pur3.append(aux)
+                    aux_act_pur3.append([i,j,k])
 
     optimal_point,pur = global_optima(opt_pur1,opt_pur2,opt_pur3,pos_pursuer,pos_evader,alpha,r,aux_act_pur2,aux_act_pur3,par_ellipsoide,which_area)
 
@@ -284,6 +290,7 @@ def Optimal_Control(pos_pursuer,pos_evader,r,pursuers_speed,evader_speed,mode,dt
     vel_pursuer = (dt*noisy_speedp.reshape(-1,1)*(target-pos_pursuer)/aux_norm)
     vel_evader = dt*noisy_speede*(optimal_point-pos_evader)/np.linalg.norm(optimal_point-pos_evader)
     x0 = optimal_point
+    vel_pursuer = vel_pursuer.reshape((n_pur,3))
     ##
     # vel_evader = np.array([1,0,0])
     # vel_pursuer = np.zeros((n_pur,3))

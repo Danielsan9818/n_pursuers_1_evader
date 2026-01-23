@@ -23,18 +23,12 @@ class reach_avoid_node(Node):
         super().__init__('reach_avoid_nv1')
         self.info = self.get_logger().info
         self.info('reach avoid game node has been started.')
-        self.declare_parameter('r', '1.')
-        self.declare_parameter('robots', ['C04', 'C13', 'C05'])#,'C14','C20']) 
-        self.declare_parameter('number_of_agents', '3')
-        self.declare_parameter('phi_dot', '0.8')
+        self.declare_parameter('robots', ['C04', 'C14', 'C05'])#,'C14','C20']) 
   
         self.robots = self.get_parameter('robots').value
-        self.n_agents  = int(self.get_parameter('number_of_agents').value)
-        self.r  = float(self.get_parameter('r').value)
-        self.k_phi  = 8#float(self.get_parameter('k_phi').value)
-        self.phi_dot  = float(self.get_parameter('phi_dot').value)
-        self.initial_phase = 0
-        self.reboot_client = {'C04':None,'C13':None,'C05':None}
+        self.n_agents  = len(self.robots)
+        self.reboot_client = {}
+
         for robot in self.robots:
             self.reboot_client[robot] = self.create_client(Empty, robot + '/reboot')
 
@@ -46,7 +40,7 @@ class reach_avoid_node(Node):
         self.final_pose = np.zeros((self.n_agents, 3))
         self.current_pos = np.zeros((self.n_agents, 3))
         self.initial_pose = np.zeros((self.n_agents, 3))
-        self.hover_height = 1e-2*np.array([50.0,40.0,30.0])  #hover heights for each agent in cm
+        self.hover_height = 1e-2*np.array([30.0,40.0,60.0])  #hover heights for each agent in cm
         self.leader = None
         self.follower = None
         self.Rot_des = np.eye(3)
@@ -57,9 +51,10 @@ class reach_avoid_node(Node):
         self.i_takeoff = 0
         t_max = 4
         self.t_takeoff = np.arange(0,t_max,self.timer_period)
-        self.t_landing = np.arange(0,t_max,self.timer_period)
+        
         self.r_takeoff = np.zeros((3,len(self.t_takeoff),self.n_agents)) 
-
+        t_max = 2
+        self.t_landing = np.arange(t_max, 0.1, -self.timer_period)
         self.r_landing = np.zeros((3,len(self.t_landing),self.n_agents))
 
         self.position_pub = dict({'C04':None,'C13':None,'C05':None}) #,'C14':None,'C20':None)
@@ -98,9 +93,6 @@ class reach_avoid_node(Node):
             self.position_pub[robot] = self.create_publisher(Position,'/'+ self.robots[i] + '/cmd_position', 10) #create list with publishers for robot in self.robots
 
 
-        #initiating some variables
-
-
         # input("Press Enter to takeoff")
         self.timer = self.create_timer(self.timer_period, self.timer_callback)
 
@@ -112,6 +104,7 @@ class reach_avoid_node(Node):
                     # self.phase_pub.publish(self.phi_cur)
                     for i,robot in enumerate(self.robots):
                         self.takeoff(robot,i)
+                        self.get_logger().info(f'{robot}, {i}')
 
             elif self.state == 1:
                 for i,robot in enumerate(self.robots):
@@ -121,13 +114,16 @@ class reach_avoid_node(Node):
                 # target_r = self.interpolated_points[self.current_point_index] #here you calculate your desired position
                 self.Control_loop() #call your control loop that returns the desired position
                 for i,robot in enumerate(self.robots):
+                    
                     self.send_position(self.send_positions_pur_eva[i,:],robot)
                 # if np.linalg.norm(self.current_pos-target_r) < 0.05:
             
             elif self.state == 3:
+                self.get_logger().info(f' landing')
                 if all(self.has_final):
                     for i,robot in enumerate(self.robots):
                         self.landing(robot,i)
+                        self.get_logger().info(f'{robot}, {i}')
 
                     if self.i_landing < len(self.t_landing)-1:
                         self.i_landing += 1
@@ -135,8 +131,8 @@ class reach_avoid_node(Node):
                         for i,robot in enumerate(self.robots):
                             self.reboot(robot,i)
                             self.info('Exiting circle node')  
-                            self.destroy_node()
-                            rclpy.shutdown()             
+                        self.destroy_node()
+                        rclpy.shutdown()             
         except KeyboardInterrupt:
             self.info('Exiting open loop command node')
 
@@ -167,7 +163,7 @@ class reach_avoid_node(Node):
                 self.current_pos[i,1] = robot_pose.position.y
                 self.current_pos[i,2] = robot_pose.position.z
 
-            elif (self.has_final == False) and (self.land_flag[i] == True):
+            elif (all(self.has_final) == False) and (self.land_flag[i] == True):
                 
                 # self.final_pose = np.zeros(3)
                 self.info("Landing...")
@@ -175,7 +171,7 @@ class reach_avoid_node(Node):
                 self.final_pose[i,1] = robot_pose.position.y
                 self.final_pose[i,2] = robot_pose.position.z
                 self.landing_traj(2,i)
-                self.has_final = True
+                self.has_final[i] = True
 
 
 
@@ -197,14 +193,14 @@ class reach_avoid_node(Node):
 
     def landing_traj(self,t_max,i):
         #landing trajectory
-        self.t_landing = np.arange(t_max,0.1,-self.timer_period)
         self.i_landing = 0
-        self.r_landing[0,:,i] += self.final_pose[i,0]*np.ones(len(self.t_landing))
-        self.r_landing[1,:,i] += self.final_pose[i,1]*np.ones(len(self.t_landing))
+        self.r_landing[0,:,i] = self.final_pose[i,0]*np.ones(len(self.t_landing))
+        self.r_landing[1,:,i] = self.final_pose[i,1]*np.ones(len(self.t_landing))
         self.r_landing[2,:,i] = self.final_pose[i,2]*(self.t_landing/t_max)
 
     def _landing_callback(self, msg):
-        self.land_flag = msg.data
+        for i in range(self.n_agents):
+            self.land_flag[i] = msg.data
         self.state = 3
 
     def _encircle_callback(self, msg):
@@ -227,6 +223,7 @@ class reach_avoid_node(Node):
         time.sleep(1.0)    
 
     def send_position(self,r,robot):
+
         msg = Position()
         msg.x = float(r[0])
         msg.y = float(r[1])
@@ -248,7 +245,7 @@ class reach_avoid_node(Node):
         self.dt=self.timer_period
         self.evader_speed = 1e-2*np.array([5]) # evader at 5 cm/s  for initial experiments
         # self.pursuers_speed = np.array([20,40,30,21,32])
-        self.pursuers_speed = 1e-2*np.ones(self.number_pursuers)*6 #each pursuer at 6 cm/s for initial experiments
+        self.pursuers_speed = 1e-2*np.ones(self.number_pursuers)*15 #each pursuer at 6 cm/s for initial experiments
         # self.r = np.array([30,15,20,50,25])
         self.r = np.ones(self.number_pursuers)*0.5  #capture radius set to 50 cm for safety
 
@@ -261,7 +258,7 @@ class reach_avoid_node(Node):
         if self.which_area==1:
 
             center = np.array([0, 0, 0])  # x0, y0, z0
-            a, b, c = 0.08, 0.08, 2                   # ellipse axes lengths
+            a, b, c = 0.08, 0.08, 0.02                   # ellipse axes lengths
             self.par_ellipsoide = np.array([a,b,c])
 
         elif (self.which_area==2):
@@ -296,10 +293,11 @@ class reach_avoid_node(Node):
             self.state = 3
 
         self.vel_pursuer,self.vel_evader,self.x0 = Optimal_Control(self.pos_pursuers,self.pos_evader,self.r,self.pursuers_speed,self.evader_speed,self.mode,self.dt,self.x0,self.noisy_speedp,self.noisy_speede,self.par_ellipsoide,self.which_area)
+        self.get_logger().info(f'{self.x0}')
 
-        self.send_positions_pur_eva = np.append(self.vel_pursuer,self.vel_evader) + self.current_pos
+        self.send_positions_pur_eva = np.vstack((self.vel_pursuer,self.vel_evader)) + self.current_pos
 
-        self.send_positions_pur_eva = self.env_limitations(np.array(self.send_positions_pur_eva))
+        self.send_positions_pur_eva = self.env_limitations(self.send_positions_pur_eva)
 
 
         # return self.send_positions_pur_eva
